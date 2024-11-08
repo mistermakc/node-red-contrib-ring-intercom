@@ -1,7 +1,7 @@
 import nodeRed, { NodeAPI, NodeDef } from 'node-red';
 import { RingApi } from 'ring-client-api';
 import * as fs from 'fs';
-import { RingIntercom } from 'path-to-ring-intercom'; // Make sure to replace with the actual path
+import { RingIntercom } from 'ring-client-api'; 
 
 type RingConfigCredentialType = { initialToken: string, token: string };
 type RingConfigNodeType = { api: RingApi } & nodeRed.Node<RingConfigCredentialType>;
