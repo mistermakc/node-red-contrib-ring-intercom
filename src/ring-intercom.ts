@@ -1,7 +1,7 @@
 import nodeRed, { NodeAPI, NodeDef } from 'node-red';
 import { RingApi } from 'ring-client-api';
-import * as fs from 'fs';
-import { RingIntercom } from 'ring-client-api'; 
+import { RingIntercom } from 'ring-client-api'; // Replace with the actual import path for RingIntercom
+import { BehaviorSubject } from 'rxjs';
 
 type RingConfigCredentialType = { initialToken: string, token: string };
 type RingConfigNodeType = { api: RingApi } & nodeRed.Node<RingConfigCredentialType>;
@@ -77,9 +77,11 @@ const init = (RED: NodeAPI) => {
                         location.cameras.forEach(device => {
                             if (device instanceof RingIntercom) {
                                 const intercom = device as RingIntercom;
+                                const intercomData = new BehaviorSubject(intercom.data); // Hold the latest intercom data
 
                                 // Subscribe to ding events
                                 const dingSubscription = intercom.onDing.subscribe(() => {
+                                    intercomData.next(intercom.data);  // Update latest data on ding
                                     this.send({
                                         topic: `ring/${location.id}/intercom/${intercom.id}/ding`,
                                         payload: {
@@ -91,6 +93,7 @@ const init = (RED: NodeAPI) => {
 
                                 // Subscribe to unlock events
                                 const unlockSubscription = intercom.onUnlocked.subscribe(() => {
+                                    intercomData.next(intercom.data);  // Update latest data on unlock
                                     this.send({
                                         topic: `ring/${location.id}/intercom/${intercom.id}/unlock`,
                                         payload: {
@@ -100,11 +103,23 @@ const init = (RED: NodeAPI) => {
                                     });
                                 });
 
-                                // Optional: Add functionality to unlock the door
+                                // Emit the latest data when the node subscribes
+                                intercomData.subscribe((data) => {
+                                    this.send({
+                                        topic: `ring/${location.id}/intercom/${intercom.id}/state`,
+                                        payload: {
+                                            intercomData: data,
+                                            message: "Latest intercom state",
+                                        },
+                                    });
+                                });
+
+                                // Unlock the door on input
                                 this.on('input', (msg, send, done) => {
                                     if (msg.payload === 'unlock') {
                                         intercom.unlock()
                                             .then(() => {
+                                                intercomData.next(intercom.data); // Update latest data on unlock command
                                                 this.status({
                                                     fill: 'green',
                                                     text: 'Door unlocked',
@@ -123,10 +138,11 @@ const init = (RED: NodeAPI) => {
                                     }
                                 });
 
-                                // Clean up when the node is closed
+                                // Clean up subscriptions
                                 this.on('close', () => {
                                     dingSubscription.unsubscribe();
                                     unlockSubscription.unsubscribe();
+                                    intercomData.unsubscribe();
                                 });
                             }
                         });
@@ -147,7 +163,60 @@ const init = (RED: NodeAPI) => {
     }
 
     RED.nodes.registerType('Intercom', RingIntercomNode);
+
+    function DeviceListenerNode(this: nodeRed.Node, config: DefaultConfiguredNodeType) {
+        RED.nodes.createNode(this, config);
+
+        let configNode: RingConfigNodeType = RED.nodes.getNode(config.config) as RingConfigNodeType;
+        configNode.once('ring-config-token-fetched', () => {
+            if (configNode && configNode.api) {
+                const api = configNode.api;
+
+                api.getLocations().then(locations => {
+                    locations.forEach((location) => {
+
+                        const subscription = location.onDeviceDataUpdate.subscribe(deviceUpdate => {
+                            location.getDevices().then(devices => {
+                                let device = devices.find(d => d.id === deviceUpdate.id);
+
+                                if (device) {
+                                    this.send({
+                                        topic: `ring/${location.id}/device/${device.id}`,
+                                        payload: {
+                                            deviceData: device.data,
+                                            update: deviceUpdate,
+                                        },
+                                    });
+                                }
+                            }).catch(e => RED.log.error(e));
+                        });
+
+                        this.on('close', () => {
+                            subscription.unsubscribe();
+                        });
+                    });
+
+                    this.status({
+                        fill: 'green',
+                        text: 'connected',
+                    });
+                }).catch(e => {
+                    this.status({
+                        fill: 'red',
+                        text: `Error: ${e.message}`,
+                    });
+                    RED.log.error(e);
+                });
+            } else {
+                this.status({
+                    fill: 'red',
+                    text: 'no credentials',
+                });
+            }
+        });
+    }
+
+    RED.nodes.registerType('Device Listener', DeviceListenerNode);
 };
 
-// Export the initialization function
 module.exports = init;
